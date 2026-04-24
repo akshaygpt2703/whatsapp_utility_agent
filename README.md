@@ -1,172 +1,118 @@
 # WhatsApp Utility Template Agent
 
-A Claude Code-driven agent that submits WhatsApp Business templates to
-Route Mobile and iterates on redrafts until Meta approves them under the
-**UTILITY** category (not MARKETING).
+![License: MIT](https://img.shields.io/badge/License-MIT-green.svg) ![Python: 3.9+](https://img.shields.io/badge/Python-3.9+-blue.svg) ![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen.svg)
+
+> A self-improving AI agent that gets WhatsApp Business templates approved under Meta's **UTILITY** category instead of silently recategorized to MARKETING — and gets better at it with every session.
+
+Most teams treat template submission as a manual, one-shot process. Meta
+rejects or recategorizes, someone rewrites, tries again, repeats. This
+agent closes that loop: it submits via Route Mobile, polls Meta for the
+verdict, iterates through progressively stricter redrafts on failure, and
+archives every session into a growing knowledge base that informs future
+submissions.
+
+Human-in-the-loop at two decision points (confirm draft, pick redraft).
+Everything else — intake parsing, promotional linting, verdict
+interpretation, redraft generation, pattern extraction across history —
+is agent-driven.
 
 ## Why this exists
 
 Meta's WhatsApp Business Platform silently recategorizes templates from
-UTILITY to MARKETING when it detects promotional intent in the body.
-That recategorization is costly — MARKETING templates carry a higher
-per-message fee, need marketing opt-in, and can be blocked by users.
+UTILITY to MARKETING when it detects promotional intent. Recategorized
+templates carry a higher per-message fee, need marketing opt-in, and can
+be blocked by users. Getting UTILITY approval usually takes multiple
+rounds of rewriting and resubmitting. This agent automates the loop and
+compounds what it learns across submissions.
 
-Getting a template approved under UTILITY typically takes multiple
-iterations: you submit, Meta rejects or recategorizes, you rewrite more
-conservatively, you resubmit. This agent automates that loop.
+## How the agent learns
 
-## What it does
+Every session (success or hard stop) is archived under `history/`. The
+agent then re-reads all past sessions and rebuilds `history_summary.json`:
 
-Given a plain-language description of a message you want to send, the
-agent:
+- **Semantic clusters** of use cases — order confirmation, payment
+  receipt, event reminder, etc.
+- **Per-cluster pass rates** — e.g. "order confirmations: 4/5 approved,
+  avg 1.2 attempts"
+- **Winning patterns** — phrasings that have passed utility review
+- **Anti-patterns** — phrases that trigger recategorization
+  ("entitled to," "special offer," "don't miss")
+- **Curated exemplars** — 2–3 approved bodies per cluster
 
-1. Extracts structured context and flags utility-category risks up front.
-2. Lints the body for promotional language before submission.
-3. Submits to Route Mobile and polls Meta for the verdict.
-4. On failure, generates three progressively stricter redrafts, grounded
-   in patterns that have previously worked for similar templates.
-5. Loops up to five attempts. Stops after that.
-6. Archives every completed session and learns from it — future runs
-   benefit from semantic cluster summaries of past successes and failures.
+Future sessions consult the summary at intake (to classify and surface
+exemplars) and at redraft time (to ground rewrites in what has actually
+passed). The longer it runs, the less it has to guess.
 
-Its only goal is UTILITY approval. It will not propose MARKETING as an
-alternative, suggest other channels, or escalate to support.
+Clustering and pattern extraction are LLM-driven. The tool layer stays
+deterministic and dependency-free.
 
-## Features
+## Architecture
 
-- **Nine-state playbook** driving gather → lint → submit → poll → evaluate
-  → redraft → archive.
-- **Pre-submission regex lint** with ten built-in rules (promotional
-  words, urgency language, re-engagement patterns, audience-ownership
-  mismatch, formatting and emoji detection).
-- **Progressive redraft strictness** from Level 2 (clean up the obvious)
-  through Level 5 (bare-bones transactional).
-- **History-based learning.** Every archived session feeds an
-  LLM-produced cluster summary (`history_summary.json`) that future
-  sessions consult for winning patterns, failure themes, and exemplars.
-- **Deterministic tool layer.** `adapters.py` is pure Python stdlib —
-  no external packages, no AI SDK dependency. All LLM work is done by
-  Claude Code itself.
-- **Short-circuit polling.** Agent tells you when to check back; never
-  blocks a turn waiting for Meta.
+- **`PLAYBOOK.md`** — the authoritative nine-state flow the agent follows.
+- **`adapters.py`** — Route Mobile API calls, session state, and CLI.
+  Pure Python stdlib, no external packages.
+- **`prompts.py`** — intake, redraft (5 strictness levels), and summary
+  prompts.
+- **`history/`** + **`history_summary.json`** — the learning corpus.
 
 ## Getting started
 
 ### Prerequisites
 
-- [Claude Code](https://claude.com/claude-code) installed.
-- Python 3.9+ on your PATH as `python3`.
-- A Route Mobile WhatsApp Business API account with API credentials.
+- An AI coding assistant that can read files and invoke shell commands
+  (built and tested with Claude Code; adaptable to similar tools).
+- Python 3.9+.
+- A Route Mobile WhatsApp Business API account.
 
-### 1. Clone and configure
+### Setup
 
 ```bash
-git clone <your-fork-url> whatsapp_utility_agent
+git clone https://github.com/akshaygpt2703/whatsapp_utility_agent.git
 cd whatsapp_utility_agent
 cp .env.example .env
-```
-
-Edit `.env` and fill in:
-
-```
-RML_USERNAME=...
-RML_PASSWORD=...
-```
-
-### 2. Verify authentication
-
-```bash
+# Edit .env and fill in RML_USERNAME, RML_PASSWORD
 python3 adapters.py login
 ```
 
 Expected:
 
 ```json
-{
-  "ok": true,
-  "jwt_cached": true,
-  "jwt_prefix": "eyJ0..."
-}
+{ "ok": true, "jwt_cached": true, "jwt_prefix": "eyJ0..." }
 ```
 
-If this fails, check your credentials in `.env` before going further.
+### Run
 
-### 3. Run the agent
+Open the project in your AI coding assistant and ask it to submit a
+WhatsApp utility template. The assistant will load `PLAYBOOK.md` and
+walk you through structured intake, submission, polling, and redrafts.
 
-From the project directory:
-
-```bash
-claude
-```
-
-Then tell Claude Code:
-
-> "I want to submit a WhatsApp utility template."
-
-Claude Code will detect the subagent, load `PLAYBOOK.md`, and walk you
-through the full flow starting with structured intake questions.
-
-## Usage
-
-### Option A: Invoke implicitly
-
-Any request about submitting, redrafting, or checking a WhatsApp template
-will be routed to the agent automatically (via the `description` field
-in `.claude/agents/whatsapp-template.md`).
-
-### Option B: Invoke explicitly
-
-Ask Claude Code:
-
-> "Use the whatsapp-template subagent to submit a new reminder template."
-
-### Option C: Direct CLI (no Claude Code)
-
-Every adapter command is scriptable:
+You can also drive the flow directly from the CLI:
 
 ```bash
-python3 adapters.py login
 python3 adapters.py lint --body "Hi {{1}}, your order is confirmed." --broad-audience
 python3 adapters.py create --payload-file payload.json
 python3 adapters.py status --id <template_id>
-python3 adapters.py find-exemplars --business-purpose "order confirmation" --trigger-event "order placed"
+python3 adapters.py find-exemplars --business-purpose "order confirmation"
 python3 adapters.py archive-session
-python3 adapters.py get-history-summary
 ```
 
 Full list: `python3 adapters.py --help`.
 
-## Project layout
-
-```
-whatsapp_utility_agent/
-|-- PLAYBOOK.md                          # Authoritative state machine
-|-- adapters.py                          # Route Mobile API + session CLI
-|-- prompts.py                           # Intake, redraft, and summary prompts
-|-- .claude/agents/whatsapp-template.md  # Claude Code subagent definition
-|-- .env                                 # Your RML credentials (gitignored)
-|-- .env.example
-|-- session.json                         # Current session state (gitignored)
-|-- history/                             # Archived past sessions (gitignored)
-|-- history_summary.json                 # Cluster summary (gitignored)
-|-- README.md
-```
-
 ## The nine-state flow
 
-| State | Name              | What happens                                                       |
-|-------|-------------------|--------------------------------------------------------------------|
-| 1     | GATHER_CONTEXT    | Structured intake, extract fields, consult history summary         |
-| 2     | CONFIRM_DRAFT     | Show summary, warn if utility_risk is high, get explicit proceed   |
-| 3     | SUBMIT            | Lint body, build payload, call Route Mobile create endpoint        |
-| 4     | POLL              | Short-circuit schedule (T+3, +6, +9, +14, +19, +24, +29, +59, ...) |
-| 5     | EVALUATE          | Apply decision table to status + category                          |
-| 6     | SUCCESS           | Report approval, archive session, refresh history summary          |
-| 7     | PROPOSE_REDRAFTS  | Generate 3 options at strictness level N, informed by exemplars    |
-| 8     | USER_CHOOSES      | User picks or edits; loop back to STATE 3                          |
-| 9     | HARD_STOP         | After 5 failed attempts: show history, archive, refresh, stop      |
+| State | Name              | What happens                                                  |
+|-------|-------------------|---------------------------------------------------------------|
+| 1     | GATHER_CONTEXT    | Structured intake; consult history summary                    |
+| 2     | CONFIRM_DRAFT     | Warn if utility_risk is high; get explicit proceed            |
+| 3     | SUBMIT            | Lint body; call Route Mobile create endpoint                  |
+| 4     | POLL              | Short-circuit schedule (T+3, +6, +9, +14, +19, +24, +29, ...) |
+| 5     | EVALUATE          | Apply decision table to status + category                     |
+| 6     | SUCCESS           | Report approval; archive; refresh summary                     |
+| 7     | PROPOSE_REDRAFTS  | 3 options at strictness level N, informed by exemplars        |
+| 8     | USER_CHOOSES      | User picks or edits; loop back to STATE 3                     |
+| 9     | HARD_STOP         | After 5 failed attempts: archive; refresh; stop               |
 
-The decision table in STATE 5:
+Decision table in STATE 5:
 
 | status    | category                   | outcome              |
 |-----------|----------------------------|----------------------|
@@ -175,69 +121,48 @@ The decision table in STATE 5:
 | REJECTED  | any                        | FAIL_REJECTED        |
 | PENDING   | (poll exhausted)           | FAIL_TIMEOUT         |
 
-## How history improves the agent
+## Design decisions
 
-Every completed session (success or hard stop) is archived under
-`history/`. After archive, Claude Code reads every past session and
-produces `history_summary.json` with:
+- **Human-in-the-loop at STATES 2 and 8.** Each rejected or recategorized
+  template is a permanent record in your Route Mobile library and a
+  small hit to your WABA quality rating. Two lightweight human
+  checkpoints are cheap insurance against the agent running off a cliff.
 
-- Semantic clusters of use-cases (order confirmation, event reminder, etc.)
-- Per-cluster pass rates and average attempts to approval
-- Winning patterns and failure themes distilled from the raw bodies
-- Curated approved exemplars for reuse
+- **Lint is separate from redraft.** Lint runs on cheap deterministic
+  regex — catches obvious promotional language before an attempt is
+  burned. Redraft generation is LLM-driven because subtler failures need
+  semantic understanding.
 
-Future sessions consult the summary in STATE 1 and STATE 7. Semantic
-clustering and anti-pattern extraction are handled by the LLM, not
-hardcoded heuristics. The tool layer (`adapters.py`) stays deterministic
-and dependency-free; it just reads and writes the files Claude Code
-produces.
+- **JWT expiry decoded client-side.** Route Mobile tokens embed `exp` as
+  standard JWT. Local decode avoids an extra round trip per call.
 
-## Debugging
+- **Timestamped template names.** Meta imposes a cooldown on reusing
+  names after deletion. Appending unix timestamps sidesteps this
+  entirely.
 
-```bash
-python3 adapters.py session                      # Inspect current session state
-python3 adapters.py status --id <template_id>    # Manual status check
-python3 adapters.py login                        # Force re-authentication
-python3 prompts.py                               # Preview all strictness levels
-```
+- **Learning corpus has a shelf life.** Meta updates its classifier
+  quietly. Patterns that passed six months ago may not pass today. For
+  long-term use, prune old sessions or weight recent ones more heavily.
 
-## What to commit, what not to
+## What to commit
 
-Gitignored by default (do not commit):
+Gitignored by default: `.env`, `session.json`, `history/`,
+`history_summary.json`. Archived sessions may contain CTA URLs with
+user-specific tokens — keep them local.
 
-- `.env` — contains your RML credentials.
-- `session.json` — contains the cached JWT and in-flight template state.
-- `history/` — archived sessions may contain CTA URLs with session tokens.
-- `history_summary.json` — derived from `history/`.
-- `.claude/settings.local.json` — local Claude Code permission state.
-
-Safe to commit:
-
-- `PLAYBOOK.md`, `adapters.py`, `prompts.py`, `.env.example`,
-  `.claude/agents/whatsapp-template.md`, `README.md`, `.gitignore`.
-
-Before your first push, run `git status` and confirm no sensitive files
-are listed.
+Safe to commit: `PLAYBOOK.md`, `adapters.py`, `prompts.py`,
+`.env.example`, the agent configuration file, `README.md`, `LICENSE`,
+`.gitignore`.
 
 ## Scope
 
-In scope:
+In scope: create, status, recategorization detection, progressive
+redrafts, five-attempt cap, cross-session learning.
 
-- Create template, check status, detect recategorization (category vs
-  `previous_category`), progressive redrafts, five-attempt cap.
-
-Out of scope (for now):
-
-- Deleting old rejected or recategorized templates from Route Mobile's
-  library.
-- Non-URL button shapes beyond the documented form (phone, quick reply,
-  catalog). The payload scaffold covers URL buttons; extend
-  `adapters.py::create_template` and `PLAYBOOK.md::STATE 3` if you need
-  others.
-- Header media (image, document, video).
-- Non-English language variants.
-- Sending messages using approved templates.
+Out of scope: deleting old templates, non-URL buttons (phone, quick
+reply, catalog), header media, non-English languages, sending messages
+using approved templates.
 
 ## License
 
-Specify a license (MIT, Apache-2.0, etc.) before open-sourcing.
+MIT — see [LICENSE](./LICENSE).git commit -m "Improve README framing; add LICENSE"
