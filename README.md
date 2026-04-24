@@ -1,6 +1,6 @@
 # WhatsApp Utility Template Agent
 
-A Claude Code-driven agent that submits WhatsApp Business templates to
+An autonomous self learning agent that submits WhatsApp Business templates to
 Route Mobile and iterates on redrafts until Meta approves them under the
 **UTILITY** category (not MARKETING).
 
