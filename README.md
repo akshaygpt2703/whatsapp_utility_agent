@@ -165,4 +165,4 @@ using approved templates.
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).git commit -m "Improve README framing; add LICENSE"
+MIT — see [LICENSE](./LICENSE)
