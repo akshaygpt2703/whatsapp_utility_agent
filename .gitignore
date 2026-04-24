@@ -1,0 +1,8 @@
+.env
+session.json
+history/
+history_summary.json
+.claude/settings.local.json
+__pycache__/
+*.pyc
+.DS_Store
