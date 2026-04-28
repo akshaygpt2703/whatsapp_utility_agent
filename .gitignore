@@ -6,3 +6,6 @@ history_summary.json
 __pycache__/
 *.pyc
 .DS_Store
+context.json
+payload.json
+attempt.json
