@@ -27,6 +27,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -38,6 +39,7 @@ BASE_URL = "https://apis.rmlconnect.net"
 LOGIN_PATH = "/auth/v1/login/"
 CREATE_PATH = "/wba/template/create"
 STATUS_PATH = "/wba/template/{template_id}"
+DELETE_PATH = "/wba/template/"
 
 PROJECT_DIR = Path(__file__).resolve().parent
 ENV_FILE = PROJECT_DIR / ".env"
@@ -212,6 +214,15 @@ def get_template_status(template_id: str) -> dict:
     if isinstance(resp, dict) and isinstance(resp.get("data"), list) and resp["data"]:
         return resp["data"][0]
     return resp
+
+
+def delete_template(template_name: str) -> dict:
+    """DELETE /wba/template/?name=<name>. Removes a template by name."""
+    path = DELETE_PATH + "?name=" + urllib.parse.quote(template_name, safe="")
+    status, resp = _with_auth_retry("DELETE", path)
+    if status not in (200, 201, 202, 204):
+        raise RuntimeError(f"delete_template failed (status={status}): {resp}")
+    return resp if isinstance(resp, dict) else {"raw": resp}
 
 
 # ---------------------------------------------------------------------------
@@ -428,6 +439,9 @@ def main():
     s = sub.add_parser("status", help="Fetch a template's status.")
     s.add_argument("--id", required=True, help="Template ID returned by create.")
 
+    d = sub.add_parser("delete", help="Delete a template by name.")
+    d.add_argument("--name", required=True, help="Template name to delete.")
+
     ini = sub.add_parser("init-session", help="Reset current session.")
     ini.add_argument("--base-name", required=True)
     ini.add_argument("--context-file", required=True,
@@ -476,6 +490,10 @@ def main():
         elif args.cmd == "status":
             resp = get_template_status(args.id)
             _out({"ok": True, "template": resp})
+
+        elif args.cmd == "delete":
+            resp = delete_template(args.name)
+            _out({"ok": True, "deleted": args.name, "response": resp})
 
         elif args.cmd == "init-session":
             ctx = json.loads(Path(args.context_file).read_text())

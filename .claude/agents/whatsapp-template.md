@@ -1,7 +1,7 @@
 ---
 name: whatsapp-template
 description: Use when the user wants to submit, redraft, poll, or iterate on a WhatsApp Business template for Route Mobile approval under the UTILITY category. Handles the full state machine: gather context → lint → submit → poll → evaluate → redraft (up to 5 attempts) → archive → refresh history summary.
-tools: Bash, Read, Write, Edit, Glob, Grep
+tools: Bash, Read, Write, Edit, Glob, Grep, CronCreate, CronDelete, CronList
 ---
 
 # WhatsApp Utility Template Submission Agent
@@ -40,6 +40,7 @@ safety rail; PLAYBOOK.md holds the actual flow.
 | `init-session --base-name ... --context-file ...` | Reset current session |
 | `create --payload-file ...` | Submit template to Route Mobile |
 | `status --id <template_id>` | Check template status |
+| `delete --name <template_name>` | Delete a template by name |
 | `save-attempt --file ...` | Persist attempt state |
 | `session` | Dump current session state |
 | `lint --body "..." [--broad-audience]` | Pre-submit body lint |
@@ -68,9 +69,15 @@ safety rail; PLAYBOOK.md holds the actual flow.
 6. **Strictness-level lock.** Attempt 1 failed → level 2 redrafts.
    Attempt 2 → level 3. Attempt 3 → level 4. Attempt 4 → level 5.
    Never skip a level.
-7. **Short-circuit polling.** Do not block waiting. Tell the user when
-   the next check is scheduled and wait for "check now" or their next
-   message.
+7. **Auto-poll via cron.** After a successful `create` call, first cancel
+   any leftover poll crons from prior attempts (CronList + CronDelete),
+   then set up one-shot `CronCreate` jobs for every checkpoint in the
+   PLAYBOOK polling schedule (T+3, +6, +9, +14, +19, +24, +29, +59 min,
+   then every 30 min up to ~4h). Each job runs `python adapters.py status
+   --id <template_id>` and reports the result. On terminal status
+   (APPROVED/REJECTED), cancel all remaining poll crons before proceeding
+   to EVALUATE. These are session-only. The user can also say "check now"
+   for a manual check at any time.
 8. **Archive + summarize on completion.** After SUCCESS (STATE 6) or
    HARD_STOP (STATE 9), run `archive-session` and then refresh
    `history_summary.json` per `prompts.py::HISTORY_SUMMARY_PROMPT`.

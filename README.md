@@ -156,12 +156,12 @@ Safe to commit: `PLAYBOOK.md`, `adapters.py`, `prompts.py`,
 
 ## Scope
 
-In scope: create, status, recategorization detection, progressive
-redrafts, five-attempt cap, cross-session learning.
+In scope: create, status, delete (auto-deletes recategorized templates),
+recategorization detection, progressive redrafts, five-attempt cap,
+cross-session learning.
 
-Out of scope: deleting old templates, non-URL buttons (phone, quick
-reply, catalog), header media, non-English languages, sending messages
-using approved templates.
+Out of scope: non-URL buttons (phone, quick reply, catalog), header
+media, non-English languages, sending messages using approved templates.
 
 ## License
 

@@ -180,12 +180,35 @@ Polling schedule (time from submission):
 - T+59 min
 - Every 30 min thereafter, up to ~4h total
 
-Short-circuit behavior: you do NOT block and wait. Tell the user:
+#### Auto-poll via cron (session-only)
 
-> "Template submitted. I'll check status in 3 minutes. Tell me 'check now'
-> when you're ready, or I'll check when you next message me."
+Immediately after a successful `create` call, first cancel any leftover
+poll cron jobs from prior attempts via CronList + CronDelete (so stale
+template_id polls don't overlap with the new one). Then calculate absolute
+clock times for each checkpoint above and create **one-shot CronCreate
+jobs** for each.
+The prompt for every cron job must be:
 
-When the user is ready, run:
+> Check the status of WhatsApp template `<template_id>` by running:
+> `python adapters.py status --id <template_id>`
+> If status is APPROVED or REJECTED, cancel all remaining poll cron jobs
+> for this template via CronList + CronDelete, then report to the user
+> and proceed to STATE 5 (EVALUATE). If still PENDING, tell the user and
+> note when the next scheduled check will fire.
+
+For the "every 30 min thereafter" phase, create jobs at T+89, T+119, T+149,
+T+179, T+209, T+239 min (6 more checks, covering up to ~4h total).
+
+All cron jobs are **session-only** — they stop when Claude Code exits.
+Warn the user once after setup:
+
+> "I've scheduled automatic status checks at T+3, +6, +9, +14, +19, +24,
+> +29, +59, then every 30 min up to ~4h. These run only while this session
+> is open. You can also say 'check now' at any time."
+
+The user can still say "check now" to trigger a manual check at any point.
+
+When the cron fires and runs the status check:
 
 ```bash
 python adapters.py status --id <template_id>
@@ -228,6 +251,18 @@ Decision table (apply strictly):
 | PENDING   | — (poll schedule exhausted)| FAIL_TIMEOUT           |
 
 Update the attempt's `outcome` via `save-attempt`.
+
+**Auto-delete recategorized templates:** If outcome is FAIL_RECATEGORIZED
+(approved but not as UTILITY), delete the template immediately — it would
+otherwise sit in the Route Mobile library under the wrong category and
+incur higher per-message fees if accidentally used.
+
+```bash
+python adapters.py delete --name <template_name>
+```
+
+Tell the user: "Deleted `<template_name>` (was recategorized to
+`<category>`)."
 
 - If **SUCCESS**: go to STATE 6.
 - If any FAIL: check attempt count. If `attempt_no >= 5`, go to STATE 9
@@ -298,8 +333,8 @@ rewrite. Confirm the final body with the user.
 Update the context's `body` with the chosen version. Loop back to STATE 3
 (SUBMIT) with a fresh timestamped name and incremented attempt_no.
 
-**Do NOT delete the previous template.** (Delete is out of scope for this
-MVP. Old rejected/recategorized templates stay in Route Mobile's library.)
+Note: recategorized templates are already deleted in STATE 5. Rejected
+templates are left in Route Mobile's library (they can't be used anyway).
 
 ### STATE 9 — HARD_STOP
 
