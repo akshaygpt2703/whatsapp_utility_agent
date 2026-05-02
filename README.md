@@ -1,6 +1,6 @@
 # WhatsApp Utility Template Agent
 
-![License: MIT](https://img.shields.io/badge/License-MIT-green.svg) ![Python: 3.9+](https://img.shields.io/badge/Python-3.9+-blue.svg) ![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen.svg)
+![License: MIT](https://img.shields.io/badge/License-MIT-green.svg) ![Python: 3.9+](https://img.shields.io/badge/Python-3.9+-blue.svg) ![History: Supabase](https://img.shields.io/badge/History-Supabase-3ECF8E.svg) ![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen.svg)
 
 > A self-improving AI agent that gets WhatsApp Business templates approved under Meta's **UTILITY** category instead of silently recategorized to MARKETING — and gets better at it with every session.
 
