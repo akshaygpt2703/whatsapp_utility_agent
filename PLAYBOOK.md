@@ -104,13 +104,16 @@ Get explicit "yes, proceed" before moving to submission.
 
 Build the Route Mobile payload. Template name = `base_name + "_" + unix_timestamp`.
 
-The payload structure (confirmed against live API):
+The payload structure (confirmed against live API).
+
+**Static URL button** (URL is fixed at template-approval time):
 
 ```json
 {
   "template_name": "my_template_1234567890",
   "language": ["en"],
   "template_category": "UTILITY",
+  "blocking_optin": false,
   "template_type": "template",
   "components": {
     "body": {
@@ -132,11 +135,58 @@ The payload structure (confirmed against live API):
 }
 ```
 
+**Dynamic URL button** (URL contains a `{{1}}` placeholder filled at
+send time, e.g., a per-user deep link). The button's `{{1}}` is its
+own variable namespace — independent of the body's variables. You MUST
+include `website_example` with a fully resolved sample URL, otherwise
+Route Mobile rejects the create call.
+
+```json
+{
+  "template_name": "vrsa_new_recom_1730000000",
+  "language": ["en"],
+  "template_category": "UTILITY",
+  "blocking_optin": false,
+  "template_type": "template",
+  "components": {
+    "body": {
+      "text": "Dear {{1}}, \n\nA new Buy recommendation is now available in your Value Research Stock Advisor account as part of your active advisory subscription. \n\n- Independent Advisors",
+      "example": ["Akshay"]
+    },
+    "buttons": {
+      "type": "combined_buttons",
+      "elements": [
+        {
+          "label": "View Recommendation",
+          "type": "dynamic",
+          "website": "https://www.valueresearchstocks.com/{{1}}",
+          "website_example": "https://www.valueresearchstocks.com/stocks/203087"
+        }
+      ]
+    }
+  }
+}
+```
+
 Notes:
-- `example` array must have one string per variable, in order (`{{1}}` first).
-- Omit `buttons` entirely if `has_cta` is false. Omit `header` or leave as `{}`.
-- For phone/quick_reply buttons, ask the user about the button structure
-  or refer to Route Mobile docs — the example above is for URL buttons.
+- `example` array must have one string per variable in the body, in
+  order (`{{1}}` first).
+- For dynamic CTAs, the button is a SEPARATE variable namespace —
+  `{{1}}` in `website` does not refer to the body's `{{1}}`. The example
+  goes in `website_example`, NOT in the body's `example` array.
+- Always set `"blocking_optin": false` on UTILITY submissions.
+- Omit `buttons` entirely if `has_cta` is false. Omit `header` or leave
+  as `{}`.
+- **Preserve the body text verbatim** when copying it into the payload:
+  literal `\n` for newlines (JSON-escaped), dashes (`-`), em-dashes,
+  parentheses, and any other special characters go in as-is. Do not
+  strip, normalize, or "clean up" punctuation — Meta evaluates the
+  exact string. The `json.dumps` you'd use to write `/tmp/payload.json`
+  already handles escaping correctly; just don't pre-mangle the string
+  before serializing.
+- For phone/quick_reply buttons, ask the user about the button
+  structure or refer to Route Mobile docs — the examples above cover
+  URL buttons (static and dynamic).
 
 **Before building the payload, lint the body:**
 
