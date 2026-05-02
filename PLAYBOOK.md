@@ -19,15 +19,20 @@ but silently recategorize it. This agent:
 
 ## Files you will use
 
-- `adapters.py` — CLI for Route Mobile API calls and session state. Invoke
-  via Bash (e.g., `python adapters.py login`). All output is JSON.
+- `adapters.py` — CLI for Route Mobile API calls, session state, and the
+  shared Supabase history. Invoke via Bash (e.g., `python adapters.py login`).
+  All output is JSON.
 - `prompts.py` — Reference text for GATHER_CONTEXT and the 4 leveled
   PROPOSE_REDRAFTS prompts. Read these to apply the correct rules at
   each step. You do not need to "send" them anywhere — you ARE the LLM,
   so you apply the instructions mentally when generating output.
-- `session.json` — In-memory state, persisted across turns. Managed by
-  `adapters.py`; don't edit by hand.
-- `.env` — Holds `RML_USERNAME` and `RML_PASSWORD`. Read by `adapters.py`.
+- `session.json` — In-memory state for the in-flight submission, persisted
+  across turns. Managed by `adapters.py`; don't edit by hand.
+- `.env` — Holds `RML_USERNAME`, `RML_PASSWORD`, and `DATABASE_URL`
+  (Supabase). Read by `adapters.py`.
+- **Supabase tables** (`sessions`, `attempts`, `history_summary`) — the
+  shared history pool every teammate's agent learns from. `adapters.py`
+  reads/writes them; never query the DB by hand.
 
 ## One-time setup (ask user if unsure it's done)
 
@@ -275,19 +280,35 @@ Tell the user clearly:
 > "✓ Template `<template_name>` approved under UTILITY.
 > Attempts used: <n>/5. Ready to use for sending messages."
 
-Then archive the session so future runs can learn from it:
+Then archive the session into Supabase so every teammate's agent can
+learn from it:
 
 ```bash
 python adapters.py archive-session
 ```
 
+(Also writes a local cache file to `history/` — that file is for offline
+backup only and is never read back.)
+
 **Then refresh the history summary** (this is an LLM task for you, not
-a CLI call): follow `prompts.py::HISTORY_SUMMARY_PROMPT` — read all
-files under `history/*.json` using Glob + Read, cluster by semantic
-use-case, extract winning patterns and semantic anti-patterns, pick
-clean exemplars, and write the result as JSON to `history_summary.json`.
+a CLI call):
+
+```bash
+python adapters.py list-sessions
+```
+
+Pass the returned sessions array to `prompts.py::HISTORY_SUMMARY_PROMPT`,
+cluster by semantic use-case, extract winning patterns and semantic
+anti-patterns, pick clean exemplars, and write the result to a temp
+file (e.g. `/tmp/history_summary.json`) shaped as
+`{"session_count": N, "clusters": [...], "anti_patterns": [...]}`. Then:
+
+```bash
+python adapters.py save-history-summary --file /tmp/history_summary.json
+```
+
 Tell the user in one line: "History summary refreshed — N sessions
-across M clusters." Skip if history/ is empty.
+across M clusters." Skip if `list-sessions` returns fewer than 3 sessions.
 
 Stop.
 
@@ -344,15 +365,16 @@ After 5 failed attempts:
 >
 > [table of each attempt: attempt_no, body (truncated), status, category, outcome]
 
-Then archive the session so future runs can learn from it:
+Then archive the session into Supabase so future runs can learn from it:
 
 ```bash
 python adapters.py archive-session
 ```
 
-**Then refresh the history summary** (see STATE 6 for the procedure).
-Failed sessions teach as much as successful ones — anti-patterns from
-this run should be surfaced to future sessions.
+**Then refresh the history summary** (see STATE 6 for the procedure —
+`list-sessions` → cluster → `save-history-summary`). Failed sessions
+teach as much as successful ones — anti-patterns from this run should
+be surfaced to future sessions.
 
 Stop. Do NOT suggest MARKETING category, alternate channels, or escalation
 paths. The agent's only job is UTILITY approval; when that isn't possible,

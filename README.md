@@ -27,8 +27,11 @@ compounds what it learns across submissions.
 
 ## How the agent learns
 
-Every session (success or hard stop) is archived under `history/`. The
-agent then re-reads all past sessions and rebuilds `history_summary.json`:
+Every session (success or hard stop) is archived into a shared
+**Supabase Postgres** pool (`sessions`, `attempts`, `history_summary`),
+so every teammate's agent draws from — and contributes to — the same
+knowledge base. The agent then re-reads all past sessions and rebuilds
+the history summary:
 
 - **Semantic clusters** of use cases — order confirmation, payment
   receipt, event reminder, etc.
@@ -44,16 +47,18 @@ exemplars) and at redraft time (to ground rewrites in what has actually
 passed). The longer it runs, the less it has to guess.
 
 Clustering and pattern extraction are LLM-driven. The tool layer stays
-deterministic and dependency-free.
+deterministic and thin.
 
 ## Architecture
 
 - **`PLAYBOOK.md`** — the authoritative nine-state flow the agent follows.
-- **`adapters.py`** — Route Mobile API calls, session state, and CLI.
-  Pure Python stdlib, no external packages.
+- **`adapters.py`** — Route Mobile API calls, session state, CLI, and
+  the Supabase data layer (`psycopg`).
 - **`prompts.py`** — intake, redraft (5 strictness levels), and summary
   prompts.
-- **`history/`** + **`history_summary.json`** — the learning corpus.
+- **Supabase tables** (`sessions`, `attempts`, `history_summary`) — the
+  shared learning corpus. `history/*.json` is kept locally as a
+  write-through cache only.
 
 ## Getting started
 
@@ -63,15 +68,22 @@ deterministic and dependency-free.
   (built and tested with Claude Code; adaptable to similar tools).
 - Python 3.9+.
 - A Route Mobile WhatsApp Business API account.
+- A Supabase project with the `sessions`, `attempts`, and
+  `history_summary` tables (DDL in `schema.sql` if provided, otherwise
+  paste from project docs). The `pg_trgm` extension must be enabled.
 
 ### Setup
 
 ```bash
 git clone https://github.com/akshaygpt2703/whatsapp_utility_agent.git
 cd whatsapp_utility_agent
+pip3 install -r requirements.txt
 cp .env.example .env
-# Edit .env and fill in RML_USERNAME, RML_PASSWORD
+# Edit .env and fill in RML_USERNAME, RML_PASSWORD, DATABASE_URL
 python3 adapters.py login
+# If migrating from an older file-based install, push existing
+# history/*.json into Supabase (idempotent):
+python3 adapters.py backfill-history
 ```
 
 Expected:
@@ -92,8 +104,10 @@ You can also drive the flow directly from the CLI:
 python3 adapters.py lint --body "Hi {{1}}, your order is confirmed." --broad-audience
 python3 adapters.py create --payload-file payload.json
 python3 adapters.py status --id <template_id>
-python3 adapters.py find-exemplars --business-purpose "order confirmation"
+python3 adapters.py find-exemplars --business-purpose "order confirmation" --trigger-event "checkout completed"
 python3 adapters.py archive-session
+python3 adapters.py list-sessions
+python3 adapters.py save-history-summary --file /tmp/history_summary.json
 ```
 
 Full list: `python3 adapters.py --help`.
@@ -147,12 +161,13 @@ Decision table in STATE 5:
 ## What to commit
 
 Gitignored by default: `.env`, `session.json`, `history/`,
-`history_summary.json`. Archived sessions may contain CTA URLs with
-user-specific tokens — keep them local.
+`history_summary.json`. The shared corpus lives in Supabase; the local
+`history/` cache may contain CTA URLs with user-specific tokens — keep
+it out of git.
 
 Safe to commit: `PLAYBOOK.md`, `adapters.py`, `prompts.py`,
-`.env.example`, the agent configuration file, `README.md`, `LICENSE`,
-`.gitignore`.
+`requirements.txt`, `.env.example`, the agent configuration file,
+`README.md`, `LICENSE`, `.gitignore`.
 
 ## Scope
 

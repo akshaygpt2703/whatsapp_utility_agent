@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(.env)",
+      "Read(./.env)",
+      "Bash(cat .env)",
+      "Bash(cat ./.env)"
+    ],
+    "allow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "TaskCreate",
+      "TaskUpdate",
+      "TaskList",
+      "CronCreate",
+      "CronList",
+      "CronDelete",
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(pip3 list *)",
+      "Bash(pip3 install *)",
+      "Bash(git init *)",
+      "Bash(git add *)",
+      "Bash(git fetch *)",
+      "Bash(git checkout *)",
+      "Bash(git pull *)",
+      "Skill(update-config)",
+      "Write(context.json)",
+      "Write(payload.json)",
+      "Write(attempt.json)",
+      "Write(/tmp/*)",
+      "Edit(context.json)",
+      "Edit(payload.json)",
+      "Edit(attempt.json)",
+      "Edit(/tmp/*)"
+    ]
+  }
+}

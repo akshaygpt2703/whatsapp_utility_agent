@@ -277,14 +277,20 @@ utility_confidence: ...
 
 HISTORY_SUMMARY_PROMPT = """
 You (Claude Code) are refreshing the history summary for the WhatsApp
-utility template agent. This runs after a session is archived. Read
-every file under history/*.json (use Glob + Read), then produce a single
-structured summary that future sessions will consult for guidance.
+utility template agent. This runs after a session is archived. Fetch
+all archived sessions from the shared Supabase history pool with:
 
-OUTPUT: write JSON to history_summary.json with this exact shape.
+    python adapters.py list-sessions
+
+…then produce a single structured summary that future sessions (across
+every teammate) will consult for guidance.
+
+OUTPUT: write JSON to a temp file (e.g. /tmp/history_summary.json) with
+this exact shape, then persist via:
+
+    python adapters.py save-history-summary --file /tmp/history_summary.json
 
 {
-  "summarized_at": <unix_ts>,
   "session_count": <int>,
   "clusters": [
     {
@@ -296,7 +302,7 @@ OUTPUT: write JSON to history_summary.json with this exact shape.
       "winning_patterns": ["<one-line theme>", ...],
       "failure_themes": ["<one-line theme>", ...],
       "exemplars": [
-        {"body": "<approved body>", "from": "<history_file_name>"}
+        {"body": "<approved body>", "session_id": <int>}
       ]
     }
   ],
@@ -304,7 +310,7 @@ OUTPUT: write JSON to history_summary.json with this exact shape.
     {
       "theme": "<short_snake_case_name>",
       "description": "<one sentence>",
-      "seen_in": ["<history_file_name>", ...]
+      "seen_in": [<session_id>, ...]
     }
   ]
 }
@@ -324,13 +330,14 @@ RULES:
   registered-user status", "lead with time-to-event", "state fact
   without adjectives".
 - Pick exemplars that are short, purely transactional, and reusable as
-  style references. At most 3 per cluster.
-- If history/ has fewer than 3 completed sessions total (any outcome),
-  write a minimal summary: session_count set, clusters: [],
-  anti_patterns: []. Future sessions will just skip it.
+  style references. At most 3 per cluster. Reference each exemplar by
+  its session_id from list-sessions.
+- If list-sessions returns fewer than 3 sessions, write a minimal
+  summary: session_count set, clusters: [], anti_patterns: []. Future
+  sessions will just skip it.
 
-After writing the file, tell the user in one line: "History summary
-refreshed — N sessions across M clusters." Do not dump the JSON.
+After persisting, tell the user in one line: "History summary refreshed
+— N sessions across M clusters." Do not dump the JSON.
 """
 
 

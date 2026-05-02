@@ -13,10 +13,11 @@ All commands print JSON to stdout. On error, exit code != 0 and a JSON error
 object is printed.
 
 Design notes:
-  - stdlib only (urllib, json, os) — no pip install needed.
   - JWT is cached in session.json; expiry is read from the JWT itself.
   - On 401 any API call will re-login once and retry once. Second 401 is fatal.
-  - No delete endpoint wired (per request).
+  - History (sessions, attempts, history_summary) lives in Supabase Postgres.
+    Local history/*.json files are kept as a write-through cache only and are
+    NOT consulted by find-similar / find-exemplars / get-history-summary.
 """
 
 import argparse
@@ -29,7 +30,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
+
+import psycopg
+from psycopg.types.json import Jsonb
 
 # ---------------------------------------------------------------------------
 # Config
@@ -53,6 +58,57 @@ JWT_REFRESH_BUFFER_SECONDS = 60  # re-login if JWT expires within this window
 # ---------------------------------------------------------------------------
 # .env parsing (no external dependency)
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Supabase Postgres connection
+# ---------------------------------------------------------------------------
+
+# Outcomes considered terminal failures (non-success).
+_FAIL_OUTCOMES = {"FAIL_RECATEGORIZED", "FAIL_REJECTED", "FAIL_TIMEOUT"}
+MAX_ATTEMPTS = 5
+
+
+def _db():
+    """Open a Postgres connection from DATABASE_URL in .env. Caller closes."""
+    env = load_env()
+    dsn = env.get("DATABASE_URL")
+    if not dsn:
+        raise RuntimeError(
+            "DATABASE_URL not set in .env — needed for Supabase-backed history."
+        )
+    return psycopg.connect(dsn, autocommit=False)
+
+
+def _agent_user() -> str:
+    env = load_env()
+    return (
+        env.get("AGENT_USER")
+        or os.environ.get("AGENT_USER")
+        or os.environ.get("USER")
+        or "unknown"
+    )
+
+
+def _ts_to_dt(ts):
+    """Convert unix epoch (int/float/str) to a UTC datetime, or None."""
+    if ts is None or ts == "":
+        return None
+    return datetime.fromtimestamp(int(ts), tz=timezone.utc)
+
+
+def _derive_final_outcome(attempts: list) -> str:
+    """Roll up an attempt list into a session-level final_outcome."""
+    if not attempts:
+        return None
+    if any(a.get("outcome") == "SUCCESS" for a in attempts):
+        return "SUCCESS"
+    last = attempts[-1].get("outcome")
+    if not last:
+        return None
+    if len(attempts) >= MAX_ATTEMPTS and last in _FAIL_OUTCOMES:
+        return "HARD_STOP"
+    return last
+
 
 def load_env() -> dict:
     if not ENV_FILE.exists():
@@ -327,95 +383,315 @@ def lint_body(body: str, broad_audience: bool = False) -> list:
 # Feature: session history (learning across runs)
 # ---------------------------------------------------------------------------
 
-def archive_session() -> str:
-    """Move current_session to history/<ts>_<base_name>.json, reset, and
-    refresh derived lint rules from the updated history."""
+def _insert_session(conn, current: dict) -> int:
+    """Insert a (session, attempts) bundle into Supabase. Returns session id."""
+    ctx = current.get("context") or {}
+    attempts = current.get("attempts") or []
+    final_outcome = _derive_final_outcome(attempts)
+    started_at = _ts_to_dt(current.get("started_at")) or datetime.now(timezone.utc)
+    completed_at = datetime.now(timezone.utc)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO sessions (
+                base_name, business_purpose, trigger_event, utility_risk,
+                language, context, started_at, completed_at, final_outcome,
+                created_by
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id;
+            """,
+            (
+                current.get("base_name"),
+                ctx.get("business_purpose") or "",
+                ctx.get("trigger_event") or "",
+                ctx.get("utility_risk") or "low",
+                ctx.get("language"),
+                Jsonb(ctx),
+                started_at,
+                completed_at,
+                final_outcome,
+                _agent_user(),
+            ),
+        )
+        session_id = cur.fetchone()[0]
+
+        for a in attempts:
+            cur.execute(
+                """
+                INSERT INTO attempts (
+                    session_id, attempt_no, template_name, template_id, body,
+                    strictness_level, submitted_at, evaluated_at,
+                    status, category, previous_category, outcome, rejection_reason
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                """,
+                (
+                    session_id,
+                    a.get("attempt_no"),
+                    a.get("template_name"),
+                    a.get("template_id"),
+                    a.get("body") or "",
+                    a.get("strictness_level") or a.get("attempt_no") or 1,
+                    _ts_to_dt(a.get("submitted_at")) or datetime.now(timezone.utc),
+                    _ts_to_dt(a.get("evaluated_at")),
+                    a.get("status"),
+                    a.get("category"),
+                    a.get("previous_category"),
+                    a.get("outcome"),
+                    a.get("rejection_reason"),
+                ),
+            )
+    return session_id
+
+
+def archive_session() -> dict:
+    """Persist the current session: write a local cache file AND insert
+    into Supabase (sessions + attempts). Then reset session.json."""
     state = _load_session()
     curr = state.get("current_session", {}) or {}
     if not curr.get("base_name"):
         return None
+
     HISTORY_DIR.mkdir(exist_ok=True)
     ts = int(time.time())
     safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", curr["base_name"])
     path = HISTORY_DIR / f"{ts}_{safe_name}.json"
     path.write_text(json.dumps(curr, indent=2))
+
+    session_id = None
+    with _db() as conn:
+        session_id = _insert_session(conn, curr)
+        conn.commit()
+
     state["current_session"] = _default_session()["current_session"]
     _save_session(state)
-    return str(path)
+    return {"local_cache": str(path), "session_id": session_id}
 
 
-def _tokenize(text: str) -> set:
-    return set(w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(w) > 2)
+# Minimum trigram similarity for a hit. pg_trgm's `%` operator default is 0.3;
+# we use the function form so we can keep the lower bar from the file-based
+# implementation, which proved useful with a small corpus.
+_SIMILARITY_THRESHOLD = 0.15
+
+
+def find_similar(business_purpose: str, trigger_event: str, top_n: int = 3) -> list:
+    """Trigram-rank past sessions in Supabase by combined similarity."""
+    sql = """
+        WITH ranked AS (
+            SELECT s.id, s.base_name, s.final_outcome,
+                   similarity(s.business_purpose, %s)
+                   + similarity(s.trigger_event,  %s) AS score
+            FROM sessions s
+            WHERE similarity(s.business_purpose, %s) >= %s
+               OR similarity(s.trigger_event,  %s) >= %s
+        )
+        SELECT
+            r.id,
+            r.base_name,
+            r.score,
+            r.final_outcome,
+            (SELECT count(*) FROM attempts a WHERE a.session_id = r.id) AS attempt_count,
+            (SELECT body FROM attempts a
+                WHERE a.session_id = r.id AND a.outcome = 'SUCCESS'
+                ORDER BY attempt_no LIMIT 1) AS approved_body,
+            (SELECT body FROM attempts a
+                WHERE a.session_id = r.id
+                ORDER BY attempt_no DESC LIMIT 1) AS last_body,
+            (SELECT category FROM attempts a
+                WHERE a.session_id = r.id
+                ORDER BY attempt_no DESC LIMIT 1) AS last_category
+        FROM ranked r
+        ORDER BY r.score DESC
+        LIMIT %s;
+    """
+    with _db() as conn, conn.cursor() as cur:
+        cur.execute(
+            sql,
+            (
+                business_purpose, trigger_event,
+                business_purpose, _SIMILARITY_THRESHOLD,
+                trigger_event,    _SIMILARITY_THRESHOLD,
+                top_n,
+            ),
+        )
+        rows = cur.fetchall()
+    return [
+        {
+            "session_id": r[0],
+            "base_name": r[1],
+            "similarity": round(float(r[2]), 3),
+            "final_outcome": r[3],
+            "attempts": r[4],
+            "approved_body": r[5],
+            "last_body": r[6],
+            "last_category": r[7],
+        }
+        for r in rows
+    ]
+
+
+def find_exemplars(business_purpose: str, trigger_event: str, top_n: int = 3) -> list:
+    """Return top-N APPROVED-as-UTILITY bodies from history similar to the query."""
+    sql = """
+        SELECT
+            a.body AS approved_body,
+            s.base_name,
+            similarity(s.business_purpose, %s)
+            + similarity(s.trigger_event,  %s) AS score
+        FROM attempts a
+        JOIN sessions s ON s.id = a.session_id
+        WHERE a.outcome = 'SUCCESS'
+          AND (similarity(s.business_purpose, %s) >= %s
+               OR similarity(s.trigger_event,  %s) >= %s)
+        ORDER BY score DESC
+        LIMIT %s;
+    """
+    with _db() as conn, conn.cursor() as cur:
+        cur.execute(
+            sql,
+            (
+                business_purpose, trigger_event,
+                business_purpose, _SIMILARITY_THRESHOLD,
+                trigger_event,    _SIMILARITY_THRESHOLD,
+                top_n,
+            ),
+        )
+        rows = cur.fetchall()
+    return [
+        {
+            "base_name": r[1],
+            "similarity": round(float(r[2]), 3),
+            "approved_body": r[0],
+        }
+        for r in rows
+    ]
+
+
+def list_sessions() -> list:
+    """Return every archived session with its attempts, for the LLM-driven
+    history-summary refresh (PROMPTS::HISTORY_SUMMARY_PROMPT)."""
+    sql = """
+        SELECT s.id, s.base_name, s.business_purpose, s.trigger_event,
+               s.utility_risk, s.language, s.context,
+               s.started_at, s.completed_at, s.final_outcome, s.created_by,
+               (SELECT json_agg(json_build_object(
+                    'attempt_no',        a.attempt_no,
+                    'template_name',     a.template_name,
+                    'template_id',       a.template_id,
+                    'body',              a.body,
+                    'strictness_level',  a.strictness_level,
+                    'submitted_at',      a.submitted_at,
+                    'evaluated_at',      a.evaluated_at,
+                    'status',            a.status,
+                    'category',          a.category,
+                    'previous_category', a.previous_category,
+                    'outcome',           a.outcome,
+                    'rejection_reason',  a.rejection_reason
+                  ) ORDER BY a.attempt_no)
+                  FROM attempts a WHERE a.session_id = s.id) AS attempts
+        FROM sessions s
+        ORDER BY s.started_at DESC;
+    """
+    with _db() as conn, conn.cursor() as cur:
+        cur.execute(sql)
+        cols = [c.name for c in cur.description]
+        rows = cur.fetchall()
+
+    out = []
+    for r in rows:
+        rec = dict(zip(cols, r))
+        for k in ("started_at", "completed_at"):
+            if rec.get(k) is not None:
+                rec[k] = rec[k].isoformat()
+        rec["attempts"] = rec["attempts"] or []
+        out.append(rec)
+    return out
 
 
 def get_history_summary() -> dict:
-    """Read the LLM-produced history_summary.json. Summary generation is the
-    orchestrator's (Claude Code's) job — see prompts.py::HISTORY_SUMMARY_PROMPT.
-    Returns {"exists": False} if the file hasn't been produced yet."""
-    if not HISTORY_SUMMARY_FILE.exists():
+    """Read the latest history summary from Supabase. Returns {"exists": False}
+    if no summary has ever been written."""
+    sql = """
+        SELECT id, summarized_at, session_count, clusters, anti_patterns
+        FROM history_summary
+        ORDER BY summarized_at DESC
+        LIMIT 1;
+    """
+    with _db() as conn, conn.cursor() as cur:
+        cur.execute(sql)
+        row = cur.fetchone()
+    if not row:
         return {"exists": False}
-    try:
-        data = json.loads(HISTORY_SUMMARY_FILE.read_text())
-        data["exists"] = True
-        return data
-    except Exception as e:
-        return {"exists": False, "error": str(e)}
+    return {
+        "exists": True,
+        "id": row[0],
+        "summarized_at": row[1].isoformat(),
+        "session_count": row[2],
+        "clusters": row[3],
+        "anti_patterns": row[4],
+    }
 
 
-def find_exemplars(business_purpose: str, trigger_event: str,
-                   top_n: int = 3) -> list:
-    """Return top-N approved bodies from history similar to the query."""
-    matches = find_similar(business_purpose, trigger_event, top_n=top_n * 3)
-    exemplars = [
-        {
-            "base_name": m["base_name"],
-            "similarity": m["similarity"],
-            "approved_body": m["approved_body"],
-        }
-        for m in matches if m.get("approved_body")
-    ]
-    return exemplars[:top_n]
+def save_history_summary(summary: dict) -> dict:
+    """Insert a new history_summary row. Expected shape:
+        {"session_count": int, "clusters": [...], "anti_patterns": [...]}"""
+    session_count = int(summary.get("session_count") or 0)
+    clusters = summary.get("clusters") or []
+    anti_patterns = summary.get("anti_patterns") or []
+    sql = """
+        INSERT INTO history_summary (session_count, clusters, anti_patterns)
+        VALUES (%s, %s, %s)
+        RETURNING id, summarized_at;
+    """
+    with _db() as conn, conn.cursor() as cur:
+        cur.execute(sql, (session_count, Jsonb(clusters), Jsonb(anti_patterns)))
+        row = cur.fetchone()
+        conn.commit()
+    return {"id": row[0], "summarized_at": row[1].isoformat()}
 
 
-def find_similar(business_purpose: str, trigger_event: str, top_n: int = 3,
-                 min_similarity: float = 0.15) -> list:
-    """Scan history/ for past sessions similar to the query. Jaccard on tokens."""
+def backfill_history() -> dict:
+    """One-shot: push every history/*.json into Supabase. Idempotent on
+    (base_name, started_at)."""
     if not HISTORY_DIR.exists():
-        return []
-    query = _tokenize(business_purpose + " " + trigger_event)
-    if not query:
-        return []
-    results = []
-    for path in sorted(HISTORY_DIR.glob("*.json")):
-        try:
-            data = json.loads(path.read_text())
-        except Exception:
-            continue
-        ctx = data.get("context") or {}
-        hay = _tokenize(ctx.get("business_purpose", "") + " " + ctx.get("trigger_event", ""))
-        if not hay:
-            continue
-        sim = len(query & hay) / len(query | hay)
-        if sim < min_similarity:
-            continue
-        attempts = data.get("attempts", []) or []
-        outcomes = [a.get("outcome") for a in attempts if a.get("outcome")]
-        final_outcome = outcomes[-1] if outcomes else "UNKNOWN"
-        approved_attempt = next(
-            (a for a in attempts if a.get("outcome") == "SUCCESS"), None
-        )
-        results.append({
-            "file": path.name,
-            "similarity": round(sim, 2),
-            "base_name": data.get("base_name"),
-            "attempts": len(attempts),
-            "final_outcome": final_outcome,
-            "approved_body": approved_attempt["body"] if approved_attempt else None,
-            "last_body": attempts[-1]["body"] if attempts else None,
-            "last_category": attempts[-1].get("category") if attempts else None,
-        })
-    results.sort(key=lambda r: r["similarity"], reverse=True)
-    return results[:top_n]
+        return {"scanned": 0, "inserted": 0, "skipped": 0, "files": []}
+
+    inserted = []
+    skipped = []
+    scanned = 0
+    with _db() as conn:
+        with conn.cursor() as cur:
+            for path in sorted(HISTORY_DIR.glob("*.json")):
+                scanned += 1
+                try:
+                    data = json.loads(path.read_text())
+                except Exception as e:
+                    skipped.append({"file": path.name, "reason": f"unreadable: {e}"})
+                    continue
+                base_name = data.get("base_name")
+                started_at = _ts_to_dt(data.get("started_at"))
+                if not base_name or started_at is None:
+                    skipped.append({"file": path.name, "reason": "missing base_name or started_at"})
+                    continue
+                cur.execute(
+                    "SELECT id FROM sessions WHERE base_name = %s AND started_at = %s LIMIT 1;",
+                    (base_name, started_at),
+                )
+                existing = cur.fetchone()
+                if existing:
+                    skipped.append({"file": path.name, "reason": "already in DB", "session_id": existing[0]})
+                    continue
+                sid = _insert_session(conn, data)
+                inserted.append({"file": path.name, "session_id": sid})
+        conn.commit()
+    return {
+        "scanned": scanned,
+        "inserted": len(inserted),
+        "skipped": len(skipped),
+        "details": {"inserted": inserted, "skipped": skipped},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -473,7 +749,18 @@ def main():
     fe.add_argument("--top", type=int, default=3)
 
     sub.add_parser("get-history-summary",
-                   help="Return the LLM-produced history summary (clusters, themes, exemplars).")
+                   help="Return the latest LLM-produced history summary (clusters, themes, exemplars) from Supabase.")
+
+    shs = sub.add_parser("save-history-summary",
+                         help="Insert a new history_summary row into Supabase.")
+    shs.add_argument("--file", required=True,
+                     help="Path to JSON file containing {session_count, clusters, anti_patterns}.")
+
+    sub.add_parser("list-sessions",
+                   help="Return every archived session + attempts (for HISTORY_SUMMARY_PROMPT input).")
+
+    sub.add_parser("backfill-history",
+                   help="One-shot: push every history/*.json into Supabase. Idempotent.")
 
     args = p.parse_args()
 
@@ -513,8 +800,8 @@ def main():
             _out({"ok": True, "clean": len(warnings) == 0, "warnings": warnings})
 
         elif args.cmd == "archive-session":
-            path = archive_session()
-            _out({"ok": True, "archived_to": path})
+            result = archive_session()
+            _out({"ok": True, "archived": result})
 
         elif args.cmd == "find-similar":
             matches = find_similar(args.business_purpose, args.trigger_event,
@@ -528,6 +815,18 @@ def main():
 
         elif args.cmd == "get-history-summary":
             _out({"ok": True, "summary": get_history_summary()})
+
+        elif args.cmd == "save-history-summary":
+            summary = json.loads(Path(args.file).read_text())
+            result = save_history_summary(summary)
+            _out({"ok": True, "saved": result})
+
+        elif args.cmd == "list-sessions":
+            _out({"ok": True, "sessions": list_sessions()})
+
+        elif args.cmd == "backfill-history":
+            result = backfill_history()
+            _out({"ok": True, "backfill": result})
 
     except Exception as e:
         _out({"ok": False, "error": type(e).__name__, "message": str(e)})
