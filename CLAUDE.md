@@ -4,6 +4,10 @@
 - No need to ask permission for any action in this project, including running crons.
 - Do NOT display contents of context.json, payload.json, attempt.json, cron lists, or RML payloads to the user — keep those internal.
 
+## Output style
+- Suppress step-by-step narration and intermediate "thinking" output. Surface only: clarifying questions when genuinely required, the minimal user-facing summaries the PLAYBOOK requires (e.g. STATE 2 confirmation, STATE 7 redraft Options A/B/C, STATE 6/9 terminal results), and final outcomes.
+- Skip "Let me read X" / "I'll now do Y" prose between tool calls and end-of-turn recaps of what was just done. Tool calls are visible in the UI; this rule governs prose narration only.
+
 ## History storage
 History (sessions, attempts, history_summary) lives in **Supabase Postgres**, accessed exclusively through `adapters.py` (`archive-session`, `list-sessions`, `find-similar`, `find-exemplars`, `get-history-summary`, `save-history-summary`). The `history/*.json` files are a local write-through cache only and are never read back. Never query the DB by hand.
 
