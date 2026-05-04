@@ -3,6 +3,8 @@ session.json
 history/
 history_summary.json
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/todo.md
 __pycache__/
 *.pyc
 .DS_Store
