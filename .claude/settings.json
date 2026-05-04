@@ -16,6 +16,8 @@
       "CronCreate",
       "CronList",
       "CronDelete",
+      "Bash(py *)",
+      "Bash(py -m pip *)",
       "Bash(python *)",
       "Bash(python3 *)",
       "Bash(pip3 list *)",
