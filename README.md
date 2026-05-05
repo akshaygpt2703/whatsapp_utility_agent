@@ -76,10 +76,38 @@ deterministic and thin.
 
 The fastest way to use this agent is to install it as a Claude Code skill. The installer copies the agent into `~/.claude/skills/whatsapp-template/`, sets up an isolated Python venv, prompts for your credentials, and registers the `/whatsapp-template` slash command.
 
+#### One-line install
+
+**macOS / Linux:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/akshaygpt2703/whatsapp_utility_agent/main/install.sh | bash
+```
+
+**Windows (PowerShell):**
+```powershell
+iwr -useb https://raw.githubusercontent.com/akshaygpt2703/whatsapp_utility_agent/main/install.ps1 | iex
+```
+
+#### Or clone and run
+
 ```bash
 git clone https://github.com/akshaygpt2703/whatsapp_utility_agent.git
 cd whatsapp_utility_agent
+# macOS / Linux
 bash install.sh
+# Windows
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+#### Unattended install
+
+Set the credentials in your environment before running and the installer will skip prompts:
+
+```bash
+export RML_USERNAME=...
+export RML_PASSWORD=...
+export DATABASE_URL=...
+curl -fsSL https://raw.githubusercontent.com/akshaygpt2703/whatsapp_utility_agent/main/install.sh | bash
 ```
 
 The installer will walk you through:
