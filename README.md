@@ -72,7 +72,37 @@ deterministic and thin.
   `history_summary` tables (DDL in `schema.sql` if provided, otherwise
   paste from project docs). The `pg_trgm` extension must be enabled.
 
-### Setup
+### Setup — Claude Code skill (recommended)
+
+The fastest way to use this agent is to install it as a Claude Code skill. The installer copies the agent into `~/.claude/skills/whatsapp-template/`, sets up an isolated Python venv, prompts for your credentials, and registers the `/whatsapp-template` slash command.
+
+```bash
+git clone https://github.com/akshaygpt2703/whatsapp_utility_agent.git
+cd whatsapp_utility_agent
+bash install.sh
+```
+
+The installer will walk you through:
+
+1. Prerequisite checks (Python 3.9+, git)
+2. Creating `~/.claude/skills/whatsapp-template/` and `~/.whatsapp-agent/`
+3. Copying agent files
+4. Building an isolated venv and installing dependencies
+5. Prompting for `RML_USERNAME`, `RML_PASSWORD`, `DATABASE_URL`, and an optional `AGENT_USER` handle
+6. Registering `/whatsapp-template` at user scope
+7. Verifying Route Mobile login
+
+After install, open Claude Code anywhere and run:
+
+```
+/whatsapp-template
+```
+
+Source files live under `~/.claude/skills/whatsapp-template/` — you don't need to touch them. To uninstall, the installer prints the exact `rm` commands at the end.
+
+### Setup — manual (developer mode)
+
+If you want to hack on the agent itself, work directly in the cloned repo:
 
 ```bash
 git clone https://github.com/akshaygpt2703/whatsapp_utility_agent.git
