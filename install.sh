@@ -1,8 +1,22 @@
 #!/usr/bin/env bash
 # WhatsApp Utility Template Agent — installer
-# Installs the agent into ~/.claude/skills/whatsapp-template and registers
-# the /whatsapp-template slash command at user scope.
+#
+# Works in three modes:
+#   1. Local clone:    bash install.sh
+#   2. curl | bash:    curl -fsSL <raw>/install.sh | bash
+#   3. Unattended:     RML_USERNAME=... RML_PASSWORD=... DATABASE_URL=... bash install.sh
+#
+# In curl-pipe mode the script downloads required files from GitHub.
+# Prompts read from /dev/tty so they work even when stdin is the pipe.
+
 set -euo pipefail
+
+# ------------------------------------------------------------------ config --
+REPO_RAW="${WHATSAPP_AGENT_REPO_RAW:-https://raw.githubusercontent.com/akshaygpt2703/whatsapp_utility_agent/main}"
+INSTALL_DIR="${HOME}/.claude/skills/whatsapp-template"
+COMMANDS_DIR="${HOME}/.claude/commands"
+DATA_DIR="${HOME}/.whatsapp-agent"
+TOTAL_STEPS=7
 
 # ------------------------------------------------------------------ colors --
 if [[ -t 1 ]]; then
@@ -13,13 +27,12 @@ else
   BOLD=""; DIM=""; RESET=""; RED=""; GREEN=""; YELLOW=""; BLUE=""; MAGENTA=""; CYAN=""
 fi
 
-step() { printf "\n${BOLD}${BLUE}[%s/%s]${RESET} ${BOLD}%s${RESET}\n" "$1" "$TOTAL_STEPS" "$2"; }
+step()  { printf "\n${BOLD}${BLUE}[%s/%s]${RESET} ${BOLD}%s${RESET}\n" "$1" "$TOTAL_STEPS" "$2"; }
 ok()    { printf "  ${GREEN}✓${RESET} %s\n" "$1"; }
 warn()  { printf "  ${YELLOW}!${RESET} %s\n" "$1"; }
 fail()  { printf "  ${RED}✗${RESET} %s\n" "$1" >&2; }
 info()  { printf "  ${DIM}%s${RESET}\n" "$1"; }
-
-TOTAL_STEPS=7
+abort() { fail "$1"; exit 1; }
 
 banner() {
   cat <<BANNER
@@ -33,12 +46,10 @@ ${MAGENTA}${BOLD}
    ║                                                          ║
    ╚══════════════════════════════════════════════════════════╝
 ${RESET}
-${DIM}This installs into ~/.claude/skills/whatsapp-template and
-registers the /whatsapp-template slash command for Claude Code.${RESET}
+${DIM}Installs to ~/.claude/skills/whatsapp-template and registers
+the /whatsapp-template slash command for Claude Code.${RESET}
 BANNER
 }
-
-abort() { fail "$1"; exit 1; }
 
 # ----------------------------------------------------------------- detect ---
 detect_python() {
@@ -52,43 +63,67 @@ detect_python() {
   return 1
 }
 
+# Pick a tty for prompts. When piped from curl, stdin is the pipe — read
+# from /dev/tty so the user can still type. If neither is available, fall
+# back to env vars only (unattended mode).
+TTY_IN=""
+if [[ -t 0 ]]; then
+  TTY_IN="/dev/stdin"
+elif [[ -e /dev/tty ]] && exec 3<>/dev/tty 2>/dev/null; then
+  TTY_IN="/dev/fd/3"
+fi
+
 prompt_required() {
-  # prompt_required VAR_NAME "Label" [is_secret]
-  local var="$1" label="$2" secret="${3:-0}" val=""
+  local var="$1" label="$2" secret="${3:-0}" envval="${!1:-}" val=""
+  if [[ -n "$envval" ]]; then
+    info "$label: using value from environment"
+    printf -v "$var" "%s" "$envval"
+    return
+  fi
+  if [[ -z "$TTY_IN" ]]; then
+    abort "no terminal available; set $1 in the environment for unattended install"
+  fi
   while [[ -z "$val" ]]; do
     if [[ "$secret" == "1" ]]; then
-      printf "  ${BOLD}%s${RESET}: " "$label"
-      read -r -s val
-      printf "\n"
+      printf "  ${BOLD}%s${RESET}: " "$label" >&2
+      IFS= read -r -s val <"$TTY_IN" || true
+      printf "\n" >&2
     else
-      printf "  ${BOLD}%s${RESET}: " "$label"
-      read -r val
+      printf "  ${BOLD}%s${RESET}: " "$label" >&2
+      IFS= read -r val <"$TTY_IN" || true
     fi
-    if [[ -z "$val" ]]; then
-      warn "this field is required"
-    fi
+    [[ -z "$val" ]] && warn "this field is required"
   done
   printf -v "$var" "%s" "$val"
 }
 
 prompt_optional() {
-  local var="$1" label="$2" default="${3:-}" val=""
-  if [[ -n "$default" ]]; then
-    printf "  ${BOLD}%s${RESET} ${DIM}[%s]${RESET}: " "$label" "$default"
-  else
-    printf "  ${BOLD}%s${RESET} ${DIM}(optional, press Enter to skip)${RESET}: " "$label"
+  local var="$1" label="$2" default="${3:-}" envval="${!1:-}" val=""
+  if [[ -n "$envval" ]]; then
+    printf -v "$var" "%s" "$envval"
+    return
   fi
-  read -r val
+  if [[ -z "$TTY_IN" ]]; then
+    printf -v "$var" "%s" "$default"
+    return
+  fi
+  if [[ -n "$default" ]]; then
+    printf "  ${BOLD}%s${RESET} ${DIM}[%s]${RESET}: " "$label" "$default" >&2
+  else
+    printf "  ${BOLD}%s${RESET} ${DIM}(optional, press Enter to skip)${RESET}: " "$label" >&2
+  fi
+  IFS= read -r val <"$TTY_IN" || true
   printf -v "$var" "%s" "${val:-$default}"
 }
 
 # ===================================================================== run ==
 banner
 
-INSTALL_DIR="${HOME}/.claude/skills/whatsapp-template"
-COMMANDS_DIR="${HOME}/.claude/commands"
-DATA_DIR="${HOME}/.whatsapp-agent"
-REPO_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+REPO_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]:-$0}" )" &> /dev/null && pwd 2>/dev/null || echo "" )"
+SOURCE_MODE="local"
+if [[ -z "$REPO_DIR" ]] || [[ ! -f "$REPO_DIR/adapters.py" ]]; then
+  SOURCE_MODE="remote"
+fi
 
 # Step 1: prerequisites ------------------------------------------------------
 step 1 "Checking prerequisites"
@@ -97,34 +132,49 @@ if PY_BIN=$(detect_python); then
 else
   abort "Python 3.9+ not found. Install Python and re-run."
 fi
-if ! command -v git >/dev/null 2>&1; then
-  warn "git not on PATH (not strictly required, but recommended)"
-else
-  ok "git: $(git --version)"
+if [[ "$SOURCE_MODE" == "remote" ]]; then
+  if command -v curl >/dev/null 2>&1; then
+    DOWNLOADER="curl -fsSL"
+  elif command -v wget >/dev/null 2>&1; then
+    DOWNLOADER="wget -qO-"
+  else
+    abort "neither curl nor wget found, but install was launched in remote mode"
+  fi
+  ok "downloader: ${DOWNLOADER%% *}"
 fi
+ok "source: ${SOURCE_MODE}"
 
 # Step 2: install dirs -------------------------------------------------------
 step 2 "Creating install directories"
-mkdir -p "$INSTALL_DIR" "$COMMANDS_DIR" "$DATA_DIR"
+mkdir -p "$INSTALL_DIR" "$COMMANDS_DIR" "$DATA_DIR" "$INSTALL_DIR/skills/whatsapp-template"
 ok "skill dir:    $INSTALL_DIR"
 ok "commands dir: $COMMANDS_DIR"
 ok "data dir:     $DATA_DIR"
 
-# Step 3: copy files ---------------------------------------------------------
-step 3 "Copying agent files"
-for f in adapters.py prompts.py PLAYBOOK.md requirements.txt schema.sql .env.example; do
-  if [[ -f "$REPO_DIR/$f" ]]; then
-    cp "$REPO_DIR/$f" "$INSTALL_DIR/$f"
-    ok "$f"
+# Step 3: copy / download files ----------------------------------------------
+step 3 "Fetching agent files"
+fetch_file() {
+  local relpath="$1" dest="$2"
+  if [[ "$SOURCE_MODE" == "local" && -f "$REPO_DIR/$relpath" ]]; then
+    cp "$REPO_DIR/$relpath" "$dest"
+    ok "$relpath"
   else
-    warn "$f not found in repo (skipped)"
+    if $DOWNLOADER "$REPO_RAW/$relpath" > "$dest" 2>/dev/null; then
+      ok "$relpath (downloaded)"
+    else
+      warn "$relpath not available (skipped)"
+      rm -f "$dest"
+    fi
   fi
+}
+
+for f in adapters.py prompts.py PLAYBOOK.md requirements.txt schema.sql .env.example; do
+  fetch_file "$f" "$INSTALL_DIR/$f"
 done
-mkdir -p "$INSTALL_DIR/skills/whatsapp-template"
-if [[ -f "$REPO_DIR/skills/whatsapp-template/SKILL.md" ]]; then
-  cp "$REPO_DIR/skills/whatsapp-template/SKILL.md" "$INSTALL_DIR/skills/whatsapp-template/SKILL.md"
-  ok "SKILL.md"
-fi
+fetch_file "skills/whatsapp-template/SKILL.md" "$INSTALL_DIR/skills/whatsapp-template/SKILL.md"
+
+[[ -f "$INSTALL_DIR/adapters.py" ]] || abort "adapters.py is missing — install cannot continue"
+[[ -f "$INSTALL_DIR/requirements.txt" ]] || abort "requirements.txt is missing — install cannot continue"
 
 # Step 4: venv + deps --------------------------------------------------------
 step 4 "Creating isolated Python environment"
@@ -152,23 +202,26 @@ ok "dependencies installed"
 step 5 "Configuring credentials"
 ENV_FILE="$INSTALL_DIR/.env"
 
+OVERWRITE=1
 if [[ -f "$ENV_FILE" ]]; then
   warn "$ENV_FILE already exists"
-  printf "  ${BOLD}Overwrite? [y/N]${RESET} "
-  read -r answer
-  if [[ ! "$answer" =~ ^[Yy]$ ]]; then
-    info "keeping existing .env"
-    SKIP_ENV=1
+  if [[ -n "$TTY_IN" ]]; then
+    printf "  ${BOLD}Overwrite? [y/N]${RESET} " >&2
+    IFS= read -r answer <"$TTY_IN" || true
+    [[ "$answer" =~ ^[Yy]$ ]] || OVERWRITE=0
+  else
+    info "non-interactive: keeping existing .env"
+    OVERWRITE=0
   fi
 fi
 
-if [[ "${SKIP_ENV:-0}" != "1" ]]; then
-  cat <<EOF
+if [[ "$OVERWRITE" == "1" ]]; then
+  cat <<EOF >&2
 
   ${CYAN}We need three things to talk to Route Mobile and the shared history DB.${RESET}
   ${DIM}You can find these in:${RESET}
   ${DIM}  • Route Mobile portal -> API credentials${RESET}
-  ${DIM}  • Supabase dashboard -> Project Settings -> Database -> Connection string (use port 6543, transaction pooler)${RESET}
+  ${DIM}  • Supabase dashboard -> Project Settings -> Database -> Connection string (port 6543, transaction pooler)${RESET}
 
 EOF
   prompt_required RML_USERNAME "Route Mobile username"
@@ -191,9 +244,6 @@ fi
 # Step 6: register slash command --------------------------------------------
 step 6 "Registering /whatsapp-template slash command"
 CMD_FILE="$COMMANDS_DIR/whatsapp-template.md"
-
-VENV_PY_ESCAPED="${VENV_PY// /\\ }"
-INSTALL_DIR_ESCAPED="${INSTALL_DIR// /\\ }"
 
 cat > "$CMD_FILE" <<EOF
 # WhatsApp Utility Template Submission Agent
@@ -295,8 +345,7 @@ ${GREEN}${BOLD}━━━━━━━━━━━━━━━━━━━━━�
 
       ${BOLD}${CYAN}/whatsapp-template${RESET}
 
-  The agent will walk you through intake, submission, polling, and
-  redrafts. Source files live at ${DIM}${INSTALL_DIR}${RESET} —
+  Source files live at ${DIM}${INSTALL_DIR}${RESET} —
   you don't need to touch them.
 
   To uninstall:
